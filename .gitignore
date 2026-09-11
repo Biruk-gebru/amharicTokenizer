@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+.ipynb_checkpoints/
+
+# tiktoken BPE ranks: fetched, not vendored, to avoid redistributing
+# third-party data files. Run measurement/fetch_tiktoken_cache.sh.
+measurement/tkcache/
