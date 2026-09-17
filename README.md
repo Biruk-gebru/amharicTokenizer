@@ -27,6 +27,7 @@ measurement/
   fetch_tiktoken_cache.sh                  populates tkcache/ for offline runs
   data/                                    UDHR parallel corpus (amh / eng / kor)
   requirements.txt
+visuals/                                   generated figures (notebook §11)
 ```
 
 ## Running it
@@ -48,31 +49,71 @@ avoid redistributing third-party data files; `fetch_tiktoken_cache.sh` pulls the
 
 ## Results
 
-UDHR, same document in each language. `amh` is space-normalized (see notebook §1).
+19 tokenizers, UDHR parallel corpus (same document in Amharic, English, Korean).
+`amh` is space-normalized (notebook §1). Coverage = characters that encode to one
+token **that decodes back**.
 
-| Tokenizer | Vocab | Ethiopic syllables as 1 token | amh vs eng | amh vs kor |
+| Tokenizer | Vocab | Ethiopic 1-token | amh vs eng | Amharic in a 128k context |
 |---|---|---|---|---|
-| GPT-4 `cl100k_base` | 100,277 | **0 / 358** | 6.64x | 2.79x |
-| GPT-4o `o200k_base` | 200,019 | **0 / 358** | 4.98x | 3.64x |
-| GPT-2 | 50,257 | **0 / 358** | 6.56x | 1.31x |
-| XLM-R | 250,002 | 84 / 358 (323 in vocab) | **0.94x** | 0.88x |
-| mBERT | 119,547 | 0 / 358 | *(LOSSY, excluded)* | — |
+| GPT-NeoX | 50,277 | 0 / 358 | 6.91x | 49,384 chars |
+| GPT-4 | 100,277 | **0 / 358** | 6.64x | 53,119 chars |
+| OLMo 2 | 100,278 | 0 / 358 | 6.64x | 53,119 chars |
+| SmolLM2 | 49,152 | 0 / 358 | 6.58x | 52,441 chars |
+| GPT-2 | 50,257 | 0 / 358 | 6.56x | 52,441 chars |
+| Mistral 7B | 32,768 | 0 / 358 | 5.51x | 57,764 chars |
+| DeepSeek-V3 | 128,815 | 0 / 358 | 5.20x | 68,503 chars |
+| GPT-4o | 200,019 | **0 / 358** | 4.98x | 70,752 chars |
+| gpt-oss-20b | 200,019 | 0 / 358 | 4.98x | 70,752 chars |
+| BLOOM | 250,680 | 1 / 358 | 4.34x | 80,301 chars |
+| Kimi K3 | 163,584 | 13 / 358 | 3.63x | 97,191 chars |
+| Qwen3.5 Amharic SFT | 248,077 | 20 / 358 | 3.59x | 95,449 chars |
+| Qwen3 | 151,669 | 116 / 358 | 3.48x | 101,425 chars |
+| Aya-101 | 250,100 | 39 / 358 | 1.32x | 206,466 chars |
+| NLLB-200 | 256,204 | 176 / 358 | 0.96x | 326,080 chars |
+| XLM-R | 250,002 | 84 / 358 | **0.94x** | 332,595 chars |
+| AfroXLM-R | 250,002 | 84 / 358 | **0.94x** | 332,595 chars |
+| Amharic RoBERTa | 32,000 | 41 / 358 (358 in vocab) | **0.21x** | 481,109 chars |
+| mBERT | 119,547 | 0 / 358 | *lossy on Amharic, excluded* | — |
+
+English gets ~696,000 characters into a 128k-token window. Amharic gets **53,000** on
+GPT-4: about **8%** of the context, at **6.6x** the price.
+
+Figures in [`visuals/`](visuals/): token inflation, coverage, per-character cost,
+context window.
+
+> The coverage column understates SentencePiece models. It counts characters that encode
+> to one token *standalone*, and SentencePiece prefixes standalone input with `▁`.
+> Amharic RoBERTa has all 358 in its vocabulary and encodes Amharic in the fewest tokens
+> of any tokenizer measured. Notebook §6 reports both.
 
 ## Findings so far
 
-1. **GPT-4 (`cl100k_base`) and GPT-4o (`o200k_base`) contain zero tokens holding a
-   complete Ethiopic character**, across 100k and 200k vocabularies. Amharic falls all
-   the way back to raw UTF-8 bytes.
-2. On the same UDHR document, Amharic costs roughly **5–6.6x** the tokens of English in
-   those tokenizers, which is **about 3x worse than Korean**, the script the RFC is about.
-3. **This is not inherent to Ge'ez.** XLM-R round-trips Amharic cleanly and reaches
-   roughly parity with English, tokenizing common words whole, using about 1% of its
-   vocabulary on the script.
-4. Point 3 **cuts against the RFC's central claim** that decomposition beats vocabulary
-   expansion. For Ethiopic, plain vocabulary inclusion already works. Any argument for
-   decomposition has to engage with that rather than omit it.
-5. A shared leading token is **not** evidence of structural awareness. `o200k` groups
+1. **GPT-4 and GPT-4o contain zero tokens holding a complete Ethiopic character**, across
+   100k and 200k vocabularies. Confirmed two independent ways, including a byte-level scan
+   that would catch a token holding a partial UTF-8 sequence. Amharic falls back to raw bytes.
+2. **The gap is not uniform, and "all frontier models have zero" would be wrong.**
+   DeepSeek-V3, gpt-oss-20b, OLMo 2, SmolLM2, GPT-NeoX and GPT-2 are also at zero, but
+   Qwen3 covers 116/358 and Kimi K3 covers 13/358. A vocabulary *string* scan reports 0
+   for all of them, because byte-level BPE stores tokens in a remapped alphabet — that
+   method is invalid for this family and the notebook flags the disagreement explicitly.
+3. **A 250,680-entry multilingual vocabulary can still contain almost nothing.** BLOOM
+   covers 1 of 358.
+4. **Fine-tuning a model for Amharic does not fix its tokenizer.** `qwen3.5-4b-amharic-sft`
+   carries 20/358 and still costs 3.59x English — it inherits the base tokenizer untouched.
+   Weights were adapted; the vocabulary was not.
+5. **This is not inherent to Ge'ez.** XLM-R and AfroXLM-R reach 0.94x English, NLLB-200
+   0.96x, and a 32k Amharic-specific tokenizer reaches **0.21x** — five times *cheaper*
+   than English. The script tokenizes well when it is in the training data.
+6. **Point 5 cuts against the RFC's central claim** that decomposition beats vocabulary
+   expansion. For Ethiopic, plain vocabulary inclusion already works, at roughly 1% of
+   vocabulary. Any argument for decomposition has to engage with that rather than omit it.
+7. A shared leading token is **not** evidence of structural awareness. `o200k` groups
    Ethiopic syllables by UTF-8 byte prefix, which spans several unrelated consonants.
+
+### What it costs
+
+English gets ~696,000 characters into a 128k-token context window. Amharic gets **53,000**
+on GPT-4 — about **8%** — and is billed at **6.6x** for the same document.
 
 ## A methodological warning
 
@@ -96,9 +137,24 @@ tokenizers that actually have good coverage:
 - SentencePiece prefixes standalone input with `▁`, so a syllable can be in the
   vocabulary yet never encode to one token alone (XLM-R: 323 present, 84 standalone).
 
+A fifth trap ran the opposite way. The round-trip gate was applied **globally**, so
+Amharic RoBERTa — which round-trips Amharic perfectly but cannot represent Korean — was
+marked LOSSY and dropped from every Amharic result. The best Amharic tokenizer in the
+study was excluded on the basis of a language it never claimed to support. Integrity is
+now tracked per language.
+
 **The transferable lesson:** in any tokenizer benchmark, a metric that does not verify
-the content survived will rank the most broken tokenizer first. Round-trip is not a
-nice-to-have, it is the precondition for every other number on the page.
+the content survived will rank the most broken tokenizer first — and a gate applied too
+broadly will discard the best specialist. Round-trip is the precondition for every other
+number on the page, and it has to be per language.
+
+### §10 enforces this
+
+The notebook builds three deliberately broken tokenizers (`DropScript`, `UnkMapper`,
+`Prefixer`), each modelled on a real bug above, and asserts every metric catches them.
+It also demonstrates the traps: the naive `len(ids)==1` test scores `UnkMapper` at
+358/358 while `covered()` scores it 0. **The cell raises on failure**, so the claims here
+are only as good as those guards, and the notebook will not execute if one stops working.
 
 ## Status
 
