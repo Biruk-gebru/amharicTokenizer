@@ -37,6 +37,8 @@ Section 3 is an integrity gate that must pass before any efficiency number is tr
 | 6 | Vocabulary coverage: how many Ethiopic syllables are a single token |
 | 7 | Structural awareness: do the 7 vowel orders of one consonant share representation |
 | 8 | Practical cost: context window and API spend |
+| 10 | **Self-test**: deliberately broken tokenizers must be caught by every metric |
+| 11 | Figures written to `../visuals/` |
 
 ## Data provenance
 
@@ -61,6 +63,18 @@ from tokenizers import Tokenizer as HFTokenizer
 
 ETHIOPIC = range(0x1200, 0x1380)   # Ethiopic block + supplement start
 HANGUL   = range(0xAC00, 0xD7A4)   # Hangul syllables
+
+# Kimi's own pre-tokenizer split pattern, copied from tokenization_kimi.py in the
+# model repo. Needed because Kimi ships tiktoken.model rather than tokenizer.json.
+KIMI_PAT = "|".join([
+    r"[\p{Han}]+",
+    r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*"
+    r"[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?",
+    r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+"
+    r"[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?",
+    r"\p{N}{1,3}", r" ?[^\s\p{L}\p{N}]+[\r\n]*", r"\s*[\r\n]+",
+    r"\s+(?!\S)", r"\s+",
+])
 
 print("tiktoken  ", tiktoken.__version__)
 import tokenizers as _tk; print("tokenizers", _tk.__version__)
@@ -106,24 +120,46 @@ for k in ("eng", "kor", "amh"):
 md(r"""
 ## 2. Tokenizers under test
 
-Two families:
+Nineteen tokenizers in three groups. The grouping is for reading the charts only;
+every tokenizer is measured identically.
 
-- **tiktoken** — `cl100k_base` (GPT-4), `o200k_base` (GPT-4o). Byte-level BPE trained on
-  predominantly English and code.
-- **HuggingFace** — `xlm-roberta-base` (multilingual SentencePiece),
-  `bert-base-multilingual-cased` (WordPiece), `gpt2` (byte-level BPE).
+- **English-centric** — GPT-4, GPT-4o, Kimi K3, gpt-oss-20b, Qwen3, DeepSeek-V3, OLMo 2,
+  Mistral 7B, SmolLM2, GPT-NeoX, GPT-2. Byte-level BPE trained mostly on English and code.
+- **Multilingual** — BLOOM, mBERT, XLM-R, NLLB-200, Aya-101. Trained deliberately across
+  many languages.
+- **African / Amharic-focused** — AfroXLM-R, Amharic RoBERTa, and a Qwen3.5 model
+  fine-tuned *for* Amharic.
 
-A uniform wrapper hides the API differences. Any tokenizer that fails to download is
-skipped with a warning rather than aborting the run.
+Three loading paths sit behind one wrapper:
+
+| kind | source | why |
+|---|---|---|
+| `tiktoken` | built-in encodings | GPT-4 / GPT-4o |
+| `tiktoken_file` | `tiktoken.model` on the Hub | Kimi ships this instead of `tokenizer.json`, so `from_pretrained` 404s |
+| `hf` | `tokenizer.json` | everything else |
+
+Any tokenizer that fails to load is skipped with a warning rather than aborting the run.
+**Llama 3.1, Gemma 2 and Aya Expanse are gated** and are not measured; they are named in
+the output so the gap is explicit.
 """)
 
 code(r"""
 class Tok:
-    # Uniform interface over tiktoken and HuggingFace tokenizers.
-    def __init__(self, name, label, kind):
-        self.name, self.label, self.kind = name, label, kind
+    # Uniform interface over tiktoken, tiktoken-file, and HuggingFace tokenizers.
+    def __init__(self, name, label, kind, family="other"):
+        self.name, self.label, self.kind, self.family = name, label, kind, family
         if kind == "tiktoken":
             self._e = tiktoken.get_encoding(name)
+            self.vocab_size = self._e.n_vocab
+        elif kind == "tiktoken_file":
+            # Kimi ships a tiktoken.model instead of HF's tokenizer.json, so
+            # Tokenizer.from_pretrained 404s on it. Load the ranks directly and
+            # rebuild the Encoding with the model's own split pattern.
+            from huggingface_hub import hf_hub_download
+            from tiktoken.load import load_tiktoken_bpe
+            ranks = load_tiktoken_bpe(hf_hub_download(name, "tiktoken.model"))
+            self._e = tiktoken.Encoding(name=label, pat_str=KIMI_PAT,
+                                        mergeable_ranks=ranks, special_tokens={})
             self.vocab_size = self._e.n_vocab
         else:
             self._e = HFTokenizer.from_pretrained(name)
@@ -134,7 +170,7 @@ class Tok:
         # which makes every encoding start with the same id and never have
         # length 1 -- silently faking both "0% single-token coverage" and
         # "100% of rows share a first token".
-        if self.kind == "tiktoken":
+        if self.kind in ("tiktoken", "tiktoken_file"):
             return self._e.encode(text)
         return self._e.encode(text, add_special_tokens=False).ids
 
@@ -142,28 +178,53 @@ class Tok:
         return self._e.decode(ids)
 
     def tokens(self, text):
-        if self.kind == "tiktoken":
+        if self.kind in ("tiktoken", "tiktoken_file"):
             return [self._e.decode([i]) for i in self.encode(text)]
         return self._e.encode(text, add_special_tokens=False).tokens
+
+    def byte_values(self):
+        # Raw token bytes, where the backend exposes them (tiktoken family only).
+        return self._e.token_byte_values() if self.kind.startswith("tiktoken") else None
 
     def n(self, text):
         return len(self.encode(text))
 
+# `family` groups tokenizers in the charts. It plays no part in any measurement.
 SPECS = [
-    ("cl100k_base",                          "GPT-4 (cl100k)",      "tiktoken"),
-    ("o200k_base",                           "GPT-4o (o200k)",      "tiktoken"),
-    ("xlm-roberta-base",                     "XLM-R",               "hf"),
-    ("google-bert/bert-base-multilingual-cased", "mBERT",           "hf"),
-    ("gpt2",                                 "GPT-2",               "hf"),
+    ("cl100k_base",             "GPT-4",            "tiktoken",      "english-centric"),
+    ("o200k_base",              "GPT-4o",           "tiktoken",      "english-centric"),
+    ("moonshotai/Kimi-K3",      "Kimi K3",          "tiktoken_file", "english-centric"),
+    ("openai/gpt-oss-20b",      "gpt-oss-20b",      "hf",            "english-centric"),
+    ("Qwen/Qwen3-8B",           "Qwen3",            "hf",            "english-centric"),
+    ("deepseek-ai/DeepSeek-V3", "DeepSeek-V3",      "hf",            "english-centric"),
+    ("allenai/OLMo-2-1124-7B",  "OLMo 2",           "hf",            "english-centric"),
+    ("mistralai/Mistral-7B-Instruct-v0.3", "Mistral 7B", "hf",       "english-centric"),
+    ("HuggingFaceTB/SmolLM2-1.7B", "SmolLM2",       "hf",            "english-centric"),
+    ("EleutherAI/gpt-neox-20b", "GPT-NeoX",         "hf",            "english-centric"),
+    ("gpt2",                    "GPT-2",            "hf",            "english-centric"),
+    ("bigscience/bloom-560m",   "BLOOM",            "hf",            "multilingual"),
+    ("google-bert/bert-base-multilingual-cased", "mBERT", "hf",      "multilingual"),
+    ("xlm-roberta-base",        "XLM-R",            "hf",            "multilingual"),
+    ("facebook/nllb-200-distilled-600M", "NLLB-200", "hf",           "multilingual"),
+    ("CohereForAI/aya-101",     "Aya-101",          "hf",            "multilingual"),
+    ("Davlan/afro-xlmr-large",  "AfroXLM-R",        "hf",            "african"),
+    ("rasyosef/roberta-base-amharic", "Amharic RoBERTa", "hf",       "african"),
+    # A model fine-tuned FOR Amharic. Does its tokenizer follow? (See §9.)
+    ("abdukuzi45/qwen3.5-4b-amharic-sft", "Qwen3.5 Amharic SFT", "hf", "african"),
 ]
 
+# Gated on the Hub, so not measurable without an access token. Listed so the
+# omission is explicit rather than silent.
+GATED = ["meta-llama/Llama-3.1-8B", "google/gemma-2-9b", "CohereLabs/aya-expanse-8b"]
+
 TOKS = []
-for name, label, kind in SPECS:
+for name, label, kind, family in SPECS:
     try:
-        TOKS.append(Tok(name, label, kind))
-        print(f"loaded  {label:22} vocab={TOKS[-1].vocab_size}")
+        TOKS.append(Tok(name, label, kind, family))
+        print(f"loaded  {label:22} {family:16} vocab={TOKS[-1].vocab_size}")
     except Exception as e:
-        print(f"SKIPPED {label:22} {type(e).__name__}: {str(e)[:70]}")
+        print(f"SKIPPED {label:22} {type(e).__name__}: {str(e)[:60]}")
+print(f"\nnot measured (gated on the Hub): {', '.join(GATED)}")
 """)
 
 md(r"""
@@ -178,8 +239,19 @@ Amharic, it is deleting it.
 
 A token-count benchmark without this check ranks the most broken tokenizer first.
 
-Any tokenizer that fails round-trip is marked **LOSSY** and excluded from the
-efficiency rankings below.
+Integrity is tracked **per language, not globally**. This matters: Amharic RoBERTa has
+a 32k Amharic-specific vocabulary and cannot represent Korean, so a global gate marks it
+LOSSY and silently drops the best Amharic tokenizer in the study from every Amharic
+result. It never claimed to handle Korean.
+
+So there are two trusted sets:
+
+- `TRUSTED` — round-trips all three languages; used for cross-language ratios like amh/kor
+- `TRUSTED_AMH` — round-trips Amharic *and* English; used for every Amharic-vs-English
+  claim and every figure
+
+A tokenizer excluded from one is not necessarily excluded from the other, and the
+exclusions are printed rather than inferred.
 """)
 
 code(r"""
@@ -202,14 +274,30 @@ for t in TOKS:
     shown = dec[:42] if dec.strip() else "<EMPTY — text destroyed>"
     print(f"{t.label:22} {'OK' if ok else 'LOSSY':>9}  {shown}")
 
-print("\nFull-document round-trip:")
+# Integrity is tracked PER LANGUAGE, not globally. A tokenizer built for one
+# language legitimately fails on another -- Amharic RoBERTa has a 32k Amharic
+# vocabulary and cannot represent Korean. Judging it globally would throw away the
+# best Amharic tokenizer in the study on the basis of a language it never claimed.
+print("\nFull-document round-trip, per language:")
+print(f"  {'tokenizer':22} " + " ".join(f"{l:>7}" for l in REPORT_LANGS))
+OK_LANG = {}
 for t in TOKS:
-    ok_all = all(roundtrip(t, CORPUS[l])[0] for l in REPORT_LANGS)
-    INTEGRITY[t.label] = INTEGRITY[t.label] and ok_all
-    print(f"  {t.label:22} {'OK' if ok_all else 'LOSSY'}")
+    for l in REPORT_LANGS:
+        OK_LANG[(t.label, l)] = roundtrip(t, CORPUS[l])[0]
+    INTEGRITY[t.label] = all(OK_LANG[(t.label, l)] for l in REPORT_LANGS)
+    cells = " ".join(f"{'OK' if OK_LANG[(t.label,l)] else 'LOSSY':>7}" for l in REPORT_LANGS)
+    print(f"  {t.label:22} {cells}")
 
-TRUSTED = [t for t in TOKS if INTEGRITY[t.label]]
-print(f"\nTrusted for efficiency comparison: {[t.label for t in TRUSTED]}")
+def ok_for(t, *langs):
+    return all(OK_LANG[(t.label, l)] for l in langs)
+
+# Trusted for a cross-language comparison only if it round-trips every language in it.
+TRUSTED      = [t for t in TOKS if INTEGRITY[t.label]]          # all three languages
+TRUSTED_AMH  = [t for t in TOKS if ok_for(t, "amh", "eng")]     # Amharic-vs-English claims
+print(f"\ntrusted for all three languages ({len(TRUSTED)}): {[t.label for t in TRUSTED]}")
+print(f"trusted for Amharic-vs-English ({len(TRUSTED_AMH)}): {[t.label for t in TRUSTED_AMH]}")
+excluded = [t.label for t in TOKS if t not in TRUSTED_AMH]
+print(f"excluded from Amharic claims: {excluded or 'none'}")
 """)
 
 code(r"""
@@ -354,6 +442,7 @@ for t in TOKS:
 # SentencePiece prefixes standalone input with the word-boundary marker U+2581,
 # so a syllable can be in the vocabulary yet never encode to one token on its own.
 # Checking the vocabulary directly separates "absent" from "not word-initial".
+VOCAB_SCAN = {}
 print("\nDirect vocabulary membership (HF tokenizers):")
 for t in TOKS:
     if t.kind != "hf":
@@ -365,6 +454,24 @@ for t in TOKS:
     contains = sum(1 for k in v if any(ord(c) in ETHIOPIC for c in k))
     print(f"  {t.label:22} bare={bare:4d}  with-marker={marked:4d}  either={anypos:4d}/{len(SYLLABLES)}"
           f"   vocab entries containing Ethiopic={contains:5d}")
+    VOCAB_SCAN[t.label] = contains
+
+# Reconcile (a) against (c). Where they disagree, (a) is right and (c) is measuring
+# the wrong thing -- byte-level BPE stores tokens in a remapped alphabet, so a string
+# scan of its vocabulary reports 0 no matter what the tokenizer can actually encode.
+# Reporting (c) alone for those models understates them badly.
+print("\nDisagreement between empirical coverage and vocabulary scan:")
+any_disagreement = False
+for t in TOKS:
+    if t.label not in VOCAB_SCAN:
+        continue
+    emp, scan = COVERAGE[t.label], VOCAB_SCAN[t.label]
+    if emp > 0 and scan == 0:
+        any_disagreement = True
+        print(f"  {t.label:22} encodes {emp:3d}/{len(SYLLABLES)} syllables as one token, "
+              f"but a vocabulary string scan sees 0 -- byte-level BPE, trust the {emp}")
+if not any_disagreement:
+    print("  (none)")
 """)
 
 code(r"""
@@ -374,9 +481,9 @@ def has_ethiopic_bytes(b):
                (b"\xe1\x88", b"\xe1\x89", b"\xe1\x8a", b"\xe1\x8b", b"\xe1\x8c", b"\xe1\x8d"))
 
 for t in TOKS:
-    if t.kind != "tiktoken":
+    vals = t.byte_values()
+    if vals is None:      # HF backends do not expose raw token bytes
         continue
-    vals = t._e.token_byte_values()
     full = sum(1 for b in vals
                if any(ord(c) in ETHIOPIC for c in b.decode("utf-8", errors="ignore")))
     partial = sum(1 for b in vals if has_ethiopic_bytes(b))
@@ -425,7 +532,7 @@ for t in TOKS:
 
 code(r"""
 # Does a shared first token mean the tokenizer learned the CONSONANT, or just a byte prefix?
-probe = next((t for t in TOKS if t.label == "GPT-4o (o200k)"), None)
+probe = next((t for t in TOKS if t.label == "GPT-4o"), None)
 if probe:
     print("o200k first-token id per syllable (ha-series vs a-series):")
     for ch in "ሀሁሃአኢኦ":
@@ -446,13 +553,13 @@ code(r"""
 CTX = 128_000
 print(f"How much Amharic fits in a {CTX:,}-token context, vs English?\n")
 print(f"{'tokenizer':22} {'eng chars':>11} {'amh chars':>11} {'ratio':>8}")
-for t in TRUSTED:
+for t in TRUSTED_AMH:
     e_per = t.n(CORPUS["eng"]) / len(CORPUS["eng"])
     a_per = t.n(CORPUS["amh"]) / len(CORPUS["amh"])
     print(f"{t.label:22} {int(CTX/e_per):11,} {int(CTX/a_per):11,} {e_per/a_per:7.2f}x")
 
 print("\nRelative API spend for the same content (English = 1.00):")
-for t in TRUSTED:
+for t in TRUSTED_AMH:
     print(f"  {t.label:22} amharic costs {t.n(CORPUS['amh'])/t.n(CORPUS['eng']):.2f}x")
 """)
 
@@ -474,7 +581,249 @@ for t in TOKS:
 """)
 
 md(r"""
-## 10. Findings and limitations
+## 10. Self-test — does this notebook's own methodology work?
+
+Every metric above was wrong at least once while this notebook was being written, and
+each time the wrong version *looked fine*. So the methodology gets tested the same way
+production code does: build deliberately broken tokenizers, and assert that each metric
+catches them.
+
+Three synthetic failures, each modelled on a real bug found here:
+
+| Fake | What it does | Real counterpart |
+|---|---|---|
+| `DropScript` | silently deletes every Ethiopic character | mBERT's `[UNK]` collapse |
+| `UnkMapper` | maps any Ethiopic run to one `[UNK]` id | mBERT again, at character level |
+| `Prefixer` | prepends a constant id to every encoding | HF `<s>` / `[CLS]` |
+
+**This cell raises on failure.** If a metric ever stops catching one of these, the
+notebook will not execute, which is the point: the claims in §12 are only as good as the
+guards here.
+""")
+
+code(r"""
+class FakeTok:
+    # Minimal stand-in exposing just what roundtrip() and covered() call.
+    kind, family, vocab_size = "fake", "self-test", 1000
+    def __init__(self, label): self.label = label
+    def n(self, text): return len(self.encode(text))
+
+class DropScript(FakeTok):
+    # Deletes Ethiopic entirely, then reports a small token count. Looks efficient.
+    def encode(self, text): return [ord(c) for c in text if ord(c) not in ETHIOPIC]
+    def decode(self, ids):  return "".join(chr(i) for i in ids)
+
+class UnkMapper(FakeTok):
+    # Collapses any run of Ethiopic into a single [UNK]. len(ids)==1 per syllable.
+    UNK = -1
+    def encode(self, text):
+        out, prev_unk = [], False
+        for c in text:
+            if ord(c) in ETHIOPIC:
+                if not prev_unk: out.append(self.UNK)
+                prev_unk = True
+            else:
+                out.append(ord(c)); prev_unk = False
+        return out
+    def decode(self, ids): return "".join("" if i == self.UNK else chr(i) for i in ids)
+
+class Prefixer(FakeTok):
+    # Wraps a real tokenizer and prepends a constant id, mimicking <s> / [CLS].
+    SPECIAL = 999999
+    def __init__(self, base): super().__init__(f"Prefixer({base.label})"); self.base = base
+    def encode(self, text): return [self.SPECIAL] + self.base.encode(text)
+    def decode(self, ids):  return self.base.decode([i for i in ids if i != self.SPECIAL])
+
+AMH = CORPUS["amh"][:400]
+real = next(t for t in TOKS if INTEGRITY.get(t.label))
+fakes = {"DropScript": DropScript("DropScript"),
+         "UnkMapper":  UnkMapper("UnkMapper"),
+         "Prefixer":   Prefixer(real)}
+
+results = []
+def check(name, condition, detail):
+    results.append((name, bool(condition), detail))
+
+# GUARD 1 -- the round-trip gate must reject silent destruction.
+for nm in ("DropScript", "UnkMapper"):
+    ok, _ = roundtrip(fakes[nm], AMH)
+    check(f"round-trip rejects {nm}", not ok, f"roundtrip returned ok={ok}")
+
+# GUARD 2 -- coverage must not credit [UNK]. The naive len(ids)==1 test scores
+# UnkMapper at 358/358; covered() must score it 0.
+naive = sum(1 for ch in SYLLABLES if len(fakes["UnkMapper"].encode(ch)) == 1)
+strict = sum(1 for ch in SYLLABLES if covered(fakes["UnkMapper"], ch))
+check("naive len==1 is fooled by [UNK] (demonstrates the trap)",
+      naive == len(SYLLABLES), f"naive scored {naive}/{len(SYLLABLES)}")
+check("covered() rejects [UNK]", strict == 0, f"covered() scored {strict}/{len(SYLLABLES)}")
+
+# GUARD 3 -- a constant prefix must not read as shared structure.
+pref = fakes["Prefixer"]
+shared = sum(1 for row in FULL_ROWS if len({pref.encode(c)[0] for c in row[:7]}) == 1)
+check("constant prefix fakes 100% shared first token (demonstrates the trap)",
+      shared == len(FULL_ROWS), f"shared {shared}/{len(FULL_ROWS)}")
+# The prefix guard is only meaningful against a base that does NOT already share
+# 37/37 on its own -- otherwise it passes without detecting anything. Pick such a
+# base explicitly, and fail loudly if none exists rather than passing vacuously.
+def shared_rows(tok):
+    return sum(1 for row in FULL_ROWS if len({tok.encode(c)[0] for c in row[:7]}) == 1)
+discriminating = [t for t in TRUSTED if shared_rows(t) < len(FULL_ROWS)]
+check("a discriminating base exists for the prefix guard", discriminating,
+      f"{len(discriminating)} tokenizers share fewer than {len(FULL_ROWS)} rows")
+if discriminating:
+    b = discriminating[0]
+    before, after = shared_rows(b), shared_rows(Prefixer(b))
+    check("prefixing inflates shared-row count to 100%",
+          before < len(FULL_ROWS) and after == len(FULL_ROWS),
+          f"{b.label}: {before}/{len(FULL_ROWS)} -> {after}/{len(FULL_ROWS)} when prefixed")
+
+# GUARD 4 -- a destructive tokenizer must never be in TRUSTED.
+check("no tokenizer lossy on Amharic is used for Amharic claims",
+      all(ok_for(t, "amh", "eng") for t in TRUSTED_AMH),
+      "a tokenizer failing round-trip reached the efficiency table")
+
+width = max(len(n) for n, _, _ in results)
+for name, ok, detail in results:
+    print(f"  [{'PASS' if ok else 'FAIL'}] {name:{width}}   {detail}")
+
+failed = [n for n, ok, _ in results if not ok]
+assert not failed, f"SELF-TEST FAILED: {failed}"
+print(f"\nall {len(results)} guards pass")
+""")
+
+md(r"""
+## 11. Figures
+
+Charts are written to `../visuals/` for use in the write-up.
+
+Design notes: one colour per family, assigned in fixed order and never recycled; every
+bar carries its value directly, since the palette's mid-tones sit under 3:1 against the
+surface and need that relief; grid recessive; no dual axes. Labels are ASCII because
+Ethiopic glyphs render as missing-glyph boxes in most matplotlib font stacks.
+""")
+
+code(r"""
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+VIS = Path("../visuals"); VIS.mkdir(exist_ok=True)
+
+SURFACE = "#fcfcfb"; INK = "#1a1a19"; MUTED = "#6b6b68"; GRID = "#e4e4e1"
+FAMILY_COLOR = {          # fixed order, validated palette slots 1-3
+    "english-centric": "#2a78d6",
+    "multilingual":    "#eb6834",
+    "african":         "#1baf7a",
+}
+plt.rcParams.update({
+    "figure.facecolor": SURFACE, "axes.facecolor": SURFACE,
+    "text.color": INK, "axes.labelcolor": INK,
+    "xtick.color": MUTED, "ytick.color": INK,
+    "axes.edgecolor": GRID, "font.size": 10,
+})
+
+def style(ax, title, xlabel):
+    ax.set_title(title, loc="left", fontsize=12, fontweight="bold", pad=14)
+    ax.set_xlabel(xlabel, fontsize=9, color=MUTED)
+    ax.grid(axis="x", color=GRID, linewidth=0.8)
+    ax.set_axisbelow(True)
+    for s in ("top", "right", "left"):
+        ax.spines[s].set_visible(False)
+
+def legend(ax, families):
+    handles = [plt.Line2D([], [], marker="s", linestyle="", markersize=9,
+                          color=FAMILY_COLOR[f], label=f) for f in families]
+    ax.legend(handles=handles, frameon=False, fontsize=9, loc="lower right")
+
+def save(fig, name):
+    fig.tight_layout(); fig.savefig(VIS / name, dpi=200); plt.close(fig)
+    print(f"  wrote ../visuals/{name}")
+
+USED = [f for f in ("english-centric", "multilingual", "african")
+        if any(t.family == f for t in TRUSTED_AMH)]
+""")
+
+code(r"""
+# FIGURE 1 -- token inflation: Amharic cost relative to English
+rows = sorted(((t, t.n(CORPUS["amh"]) / t.n(CORPUS["eng"])) for t in TRUSTED_AMH),
+              key=lambda r: r[1])
+fig, ax = plt.subplots(figsize=(9, 0.42 * len(rows) + 1.8))
+ax.barh([t.label for t, _ in rows], [v for _, v in rows],
+        color=[FAMILY_COLOR[t.family] for t, _ in rows], height=0.68)
+for i, (_, v) in enumerate(rows):
+    ax.text(v + 0.06, i, f"{v:.2f}x", va="center", fontsize=9, color=INK)
+ax.axvline(1.0, color=MUTED, linewidth=1, linestyle=(0, (4, 3)))
+ax.text(1.0, len(rows) - 0.3, " parity with English", fontsize=8, color=MUTED)
+ax.set_xlim(0, max(v for _, v in rows) * 1.16)
+style(ax, "Amharic costs this many times more tokens than the same English text",
+      "tokens relative to English (UDHR, same document)")
+legend(ax, USED)
+save(fig, "token_inflation.png")
+""")
+
+code(r"""
+# FIGURE 2 -- vocabulary coverage of the Ethiopic syllabary
+rows = sorted(((t, COVERAGE[t.label] / len(SYLLABLES) * 100) for t in TRUSTED_AMH),
+              key=lambda r: r[1])
+fig, ax = plt.subplots(figsize=(9, 0.42 * len(rows) + 1.8))
+ax.barh([t.label for t, _ in rows], [v for _, v in rows],
+        color=[FAMILY_COLOR[t.family] for t, _ in rows], height=0.68)
+for i, (t, v) in enumerate(rows):
+    ax.text(v + 1.0, i, f"{COVERAGE[t.label]}/{len(SYLLABLES)}",
+            va="center", fontsize=9, color=INK)
+ax.set_xlim(0, 108)
+style(ax, f"How many of the {len(SYLLABLES)} Ethiopic characters are a single token",
+      "percent of the syllabary covered (token must decode back)")
+legend(ax, USED)
+save(fig, "ethiopic_coverage.png")
+""")
+
+code(r"""
+# FIGURE 3 -- per-character cost, script isolated from language
+SCRIPTS = [("Ethiopic", "ሀሁሂሃሄህሆ"), ("Hangul", "한글가나다라마"), ("Latin", "abcdefg")]
+sel = sorted(TRUSTED_AMH, key=lambda t: t.n(SCRIPTS[0][1]) / 7, reverse=True)
+y = range(len(sel)); h = 0.26
+fig, ax = plt.subplots(figsize=(9, 0.55 * len(sel) + 2))
+for j, (nm, s) in enumerate(SCRIPTS):
+    vals = [t.n(s) / len(s) for t in sel]
+    ax.barh([i + (1 - j) * h for i in y], vals, height=h * 0.88,
+            color=list(FAMILY_COLOR.values())[j], label=nm)
+    for i, v in zip(y, vals):
+        ax.text(v + 0.04, i + (1 - j) * h, f"{v:.2f}", va="center", fontsize=7.5, color=INK)
+ax.set_yticks(list(y)); ax.set_yticklabels([t.label for t in sel])
+ax.axvline(3.0, color=MUTED, linewidth=1, linestyle=(0, (4, 3)))
+ax.text(3.0, len(sel) - 0.4, " 3.00 = one token per UTF-8 byte (no coverage)",
+        fontsize=8, color=MUTED)
+style(ax, "Tokens per character, by script", "tokens per character")
+ax.legend(frameon=False, fontsize=9, loc="lower right")
+save(fig, "per_char_cost.png")
+""")
+
+code(r"""
+# FIGURE 4 -- how much text actually fits in a fixed context window
+CTX = 128_000
+rows = sorted(((t, CTX / (t.n(CORPUS["eng"]) / len(CORPUS["eng"])),
+                   CTX / (t.n(CORPUS["amh"]) / len(CORPUS["amh"]))) for t in TRUSTED_AMH),
+              key=lambda r: r[2])
+y = range(len(rows)); h = 0.34
+fig, ax = plt.subplots(figsize=(9, 0.5 * len(rows) + 2))
+ax.barh([i + h / 2 for i in y], [e for _, e, _ in rows], height=h * 0.9,
+        color=MUTED, label="English")
+ax.barh([i - h / 2 for i in y], [a for _, _, a in rows], height=h * 0.9,
+        color=[FAMILY_COLOR[t.family] for t, _, _ in rows], label="Amharic")
+for i, (_, e, a) in zip(y, rows):
+    ax.text(e + 8000, i + h / 2, f"{int(e):,}", va="center", fontsize=7.5, color=MUTED)
+    ax.text(a + 8000, i - h / 2, f"{int(a):,}", va="center", fontsize=7.5, color=INK)
+ax.set_yticks(list(y)); ax.set_yticklabels([t.label for t, _, _ in rows])
+style(ax, f"Characters that fit in a {CTX:,}-token context window",
+      "characters of text")
+ax.legend(frameon=False, fontsize=9, loc="lower right")
+save(fig, "context_window.png")
+print("\nfigures written to ../visuals/")
+""")
+
+md(r"""
+## 12. Findings and limitations
 
 ### Findings
 
