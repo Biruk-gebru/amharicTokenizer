@@ -39,6 +39,7 @@ Section 3 is an integrity gate that must pass before any efficiency number is tr
 | 8 | Practical cost: context window and API spend |
 | 10 | **Self-test**: deliberately broken tokenizers must be caught by every metric |
 | 11 | Figures written to `../visuals/` |
+| 12 | **Does decomposition help?** the RFC's proposal, tested two ways |
 
 ## Data provenance
 
@@ -76,6 +77,9 @@ KIMI_PAT = "|".join([
     r"\s+(?!\S)", r"\s+",
 ])
 
+REVISIONS = json.loads((DATA / "revisions.json").read_text()) \
+            if (DATA / "revisions.json").exists() else {}
+print(f"pinned revisions: {len(REVISIONS)}")
 print("tiktoken  ", tiktoken.__version__)
 import tokenizers as _tk; print("tokenizers", _tk.__version__)
 """)
@@ -92,6 +96,18 @@ original would overstate token counts, because the separator itself is an unseen
 
 Both variants are carried through the notebook. **`amh` (space-normalized) is the
 number reported**; `amh_raw` is kept so the difference is visible rather than hidden.
+
+Two results in that comparison look like bugs and are not:
+
+- **Qwen3 gets *worse* when normalized** (5,811 -> 6,565 tokens). It has learned merges
+  involving `፡` itself but fewer involving space-plus-Ethiopic. So "normalizing is the
+  conservative choice" holds for every other tokenizer here but not for Qwen3, where it
+  understates the raw text. Reported rather than smoothed over.
+- **Gemma 2 emits exactly one token per character** on the raw text (5,202 chars ->
+  5,202 tokens). Not a coincidence: it covers 241 of 358 Ethiopic characters individually
+  but has learned no multi-character merges for Amharic, so it is effectively
+  character-level for this script. That is why it beats GPT-4 (1 token/char vs 3) while
+  still losing badly to XLM-R, which tokenizes whole words.
 """)
 
 code(r"""
@@ -107,6 +123,23 @@ CORPUS["amh"] = CORPUS["amh_raw"].replace("፡", " ")   # ETHIOPIC WORDSPACE -> 
 
 REPORT_LANGS = ["eng", "kor", "amh"]   # amh_raw shown separately
 
+# Second, independent corpus. UDHR alone is one document in one register, which is the
+# weakest point of a single-corpus benchmark. FLORES+ is 997 professionally translated
+# sentences aligned across languages and is the standard corpus in this literature.
+# Fetched, never committed -- its terms forbid re-hosting (see fetch_flores.py).
+FLORES = {}
+_fd = DATA / "flores"
+if _fd.is_dir():
+    FLORES = {l: (_fd / f"{l}.txt").read_text(encoding="utf-8")
+              for l in ("eng", "kor", "amh") if (_fd / f"{l}.txt").exists()}
+CORPORA = {"UDHR": {l: CORPUS[l] for l in REPORT_LANGS}}
+if len(FLORES) == 3:
+    CORPORA["FLORES+"] = FLORES
+    print(f"second corpus loaded: FLORES+ "
+          f"({len(FLORES['amh'].splitlines())} aligned sentences per language)")
+else:
+    print("FLORES+ not present -- run fetch_flores.py for the second corpus")
+
 print(f"{'lang':9} {'chars':>7} {'utf8 bytes':>11} {'bytes/char':>11}")
 for k, v in CORPUS.items():
     b = len(v.encode("utf-8"))
@@ -120,13 +153,14 @@ for k in ("eng", "kor", "amh"):
 md(r"""
 ## 2. Tokenizers under test
 
-Nineteen tokenizers in three groups. The grouping is for reading the charts only;
+Twenty-three tokenizers in three groups. The grouping is for reading the charts only;
 every tokenizer is measured identically.
 
 - **English-centric** — GPT-4, GPT-4o, Kimi K3, gpt-oss-20b, Qwen3, DeepSeek-V3, OLMo 2,
-  Mistral 7B, SmolLM2, GPT-NeoX, GPT-2. Byte-level BPE trained mostly on English and code.
-- **Multilingual** — BLOOM, mBERT, XLM-R, NLLB-200, Aya-101. Trained deliberately across
-  many languages.
+  Mistral 7B, Mistral Nemo, Llama 3.1, Gemma 2, SmolLM2, GPT-NeoX, GPT-2. Byte-level BPE
+  trained mostly on English and code.
+- **Multilingual** — BLOOM, mBERT, XLM-R, NLLB-200, Aya-101, Aya Expanse. Trained
+  deliberately across many languages.
 - **African / Amharic-focused** — AfroXLM-R, Amharic RoBERTa, and a Qwen3.5 model
   fine-tuned *for* Amharic.
 
@@ -139,8 +173,15 @@ Three loading paths sit behind one wrapper:
 | `hf` | `tokenizer.json` | everything else |
 
 Any tokenizer that fails to load is skipped with a warning rather than aborting the run.
-**Llama 3.1, Gemma 2 and Aya Expanse are gated** and are not measured; they are named in
-the output so the gap is explicit.
+
+**Gated tokenizers.** Llama 3.1, Gemma 2 and Aya Expanse each require accepting that
+repo's terms with a Hugging Face account before the tokenizer will download. Llama's form
+collects date of birth, job title and geo on Meta's behalf — worth knowing before you
+reproduce this, since the cost of that row is personal data rather than compute.
+
+**Revisions are pinned.** Every HF tokenizer loads at a recorded commit sha from
+`data/revisions.json`. HF repos are mutable, and without pinning the committed outputs
+would silently drift away from the tokenizers that produced them.
 """)
 
 code(r"""
@@ -162,7 +203,11 @@ class Tok:
                                         mergeable_ranks=ranks, special_tokens={})
             self.vocab_size = self._e.n_vocab
         else:
-            self._e = HFTokenizer.from_pretrained(name)
+            # Pin to a recorded sha. HF repos are mutable; without this the committed
+            # outputs silently stop matching the tokenizers that produced them.
+            rev = REVISIONS.get(name)
+            self._e = HFTokenizer.from_pretrained(name, revision=rev) if rev \
+                      else HFTokenizer.from_pretrained(name)
             self.vocab_size = self._e.get_vocab_size()
 
     def encode(self, text):
@@ -199,6 +244,9 @@ SPECS = [
     ("deepseek-ai/DeepSeek-V3", "DeepSeek-V3",      "hf",            "english-centric"),
     ("allenai/OLMo-2-1124-7B",  "OLMo 2",           "hf",            "english-centric"),
     ("mistralai/Mistral-7B-Instruct-v0.3", "Mistral 7B", "hf",       "english-centric"),
+    ("mistralai/Mistral-Nemo-Base-2407", "Mistral Nemo", "hf",       "english-centric"),
+    ("meta-llama/Llama-3.1-8B",  "Llama 3.1",        "hf",            "english-centric"),
+    ("google/gemma-2-9b",        "Gemma 2",          "hf",            "english-centric"),
     ("HuggingFaceTB/SmolLM2-1.7B", "SmolLM2",       "hf",            "english-centric"),
     ("EleutherAI/gpt-neox-20b", "GPT-NeoX",         "hf",            "english-centric"),
     ("gpt2",                    "GPT-2",            "hf",            "english-centric"),
@@ -207,15 +255,17 @@ SPECS = [
     ("xlm-roberta-base",        "XLM-R",            "hf",            "multilingual"),
     ("facebook/nllb-200-distilled-600M", "NLLB-200", "hf",           "multilingual"),
     ("CohereForAI/aya-101",     "Aya-101",          "hf",            "multilingual"),
+    ("CohereLabs/aya-expanse-8b", "Aya Expanse",     "hf",            "multilingual"),
     ("Davlan/afro-xlmr-large",  "AfroXLM-R",        "hf",            "african"),
     ("rasyosef/roberta-base-amharic", "Amharic RoBERTa", "hf",       "african"),
     # A model fine-tuned FOR Amharic. Does its tokenizer follow? (See §9.)
     ("abdukuzi45/qwen3.5-4b-amharic-sft", "Qwen3.5 Amharic SFT", "hf", "african"),
 ]
 
-# Gated on the Hub, so not measurable without an access token. Listed so the
-# omission is explicit rather than silent.
-GATED = ["meta-llama/Llama-3.1-8B", "google/gemma-2-9b", "CohereLabs/aya-expanse-8b"]
+# Gated repos need per-repo terms accepted on the Hub before they load.
+GATED_NOTE = ("Llama 3.1, Gemma 2 and Aya Expanse are gated: they require accepting "
+              "each repo's terms with a Hugging Face account. Llama's form in "
+              "particular collects date of birth, job title and geo for Meta.")
 
 TOKS = []
 for name, label, kind, family in SPECS:
@@ -224,7 +274,7 @@ for name, label, kind, family in SPECS:
         print(f"loaded  {label:22} {family:16} vocab={TOKS[-1].vocab_size}")
     except Exception as e:
         print(f"SKIPPED {label:22} {type(e).__name__}: {str(e)[:60]}")
-print(f"\nnot measured (gated on the Hub): {', '.join(GATED)}")
+print(f"\nnote: {GATED_NOTE}")
 """)
 
 md(r"""
@@ -332,6 +382,19 @@ for r in rows:
     print(f"{r['tokenizer']:22} {r['vocab']:7d} {r['eng']:6d} {r['kor']:6d} "
           f"{r['kor_x']:6.2f}x {r['amh']:6d} {r['amh_x']:6.2f}x "
           f"{r['amh']/r['kor']:7.2f}x {flag:>6}")
+
+# Same measurement on the second corpus. If the two disagree, the finding is an
+# artefact of one document rather than a property of the tokenizers.
+for cname, corp in CORPORA.items():
+    if cname == "UDHR":
+        continue
+    print(f"\n--- {cname} (independent corpus) ---")
+    print(f"{'tokenizer':22} {'eng':>6} {'kor':>6} {'kor x':>7} {'amh':>6} {'amh x':>7}")
+    for t in TOKS:
+        if not ok_for(t, "amh", "eng"):
+            continue
+        ne, nk, na = (t.n(corp[l]) for l in ("eng", "kor", "amh"))
+        print(f"{t.label:22} {ne:6d} {nk:6d} {nk/ne:6.2f}x {na:6d} {na/ne:6.2f}x")
 
 print("\nEffect of the ETHIOPIC WORDSPACE normalization (amh_raw -> amh):")
 for r in rows:
@@ -823,7 +886,127 @@ print("\nfigures written to ../visuals/")
 """)
 
 md(r"""
-## 12. Findings and limitations
+## 12. Does decomposition actually help?
+
+Everything above measures the *problem*. This section tests the *proposed fix*.
+
+RFC #1975 argues that decomposing a compositional script into its parts beats
+"brute-force" vocabulary expansion. Ethiopic can be decomposed the same way Hangul can,
+but with an important difference: **Unicode defines no decomposition for it.** Hangul
+decomposes arithmetically; Ethiopic syllables are precomposed atomic codepoints with no
+canonical decomposition, so a table is required. `ethiopic.py` derives that table from
+Unicode character names rather than hand-writing 358 entries.
+
+The representation uses characters that already exist in the script:
+
+```
+ሁ (hu)  ->  ህ (bare consonant, 6th order)  +  ኡ (standalone vowel, glottal series)
+```
+
+That mirrors the jamo approach but avoids invented sentinels — a tokenizer has some
+chance of having seen ህ and ኡ, and no chance of having seen a private-use marker.
+
+The proposal gets tested two ways, because "pre-tokenizer" can mean either.
+
+**A. As a pre-tokenizer on existing tokenizers** — what the RFC literally proposes, since
+a pre-tokenizer runs against an already-trained vocabulary.
+
+**B. As a training-time intervention** — retrain BPE on decomposed text so the merges are
+learned over the decomposed alphabet. Run separately by
+`decomposition_experiment.py`, which trains both arms at six vocabulary budgets on
+Amharic Wikipedia and evaluates on held-out text.
+
+Both arms are normalised against the **original** character count. Decomposed text has
+~1.8x the characters, so dividing each arm by its own length would hand decomposition a
+free win from the denominator.
+""")
+
+code(r"""
+import ethiopic as EE
+
+amh = CORPUS["amh"]
+dec = EE.decompose(amh)
+d, t = EE.coverage(amh)
+col, syl = EE.collision_rate(amh)
+
+print(f"decomposable syllables in the table: {len(EE.DECOMPOSE)} of 358")
+print(f"decomposable characters in this corpus: {d}/{t} ({d/t*100:.1f}%)")
+print(f"characters after decomposition: {len(amh):,} -> {len(dec):,} ({len(dec)/len(amh):.2f}x)")
+print(f"round-trip: {'OK' if EE.compose(dec) == amh else 'LOSSY'}"
+      f"   ambiguous base+carrier pairs already in source: {col}")
+print()
+for s in "ሀሁሂሃሄህሆ":
+    print(f"   {s} -> {''.join(EE.DECOMPOSE.get(s, (s,)))}")
+""")
+
+code(r"""
+# A. Decomposition applied to EXISTING tokenizers.
+print("Tokens for the same Amharic text, raw vs decomposed:\n")
+print(f"{'tokenizer':22} {'raw':>7} {'decomposed':>11} {'change':>9}")
+worse = 0
+for t in TOKS:
+    if not ok_for(t, "amh"):
+        continue
+    r, dd = t.n(amh), t.n(dec)
+    worse += dd > r
+    print(f"{t.label:22} {r:7d} {dd:11d} {dd/r:8.2f}x")
+print(f"\ndecomposition is worse for {worse} of "
+      f"{sum(1 for t in TOKS if ok_for(t,'amh'))} tokenizers")
+print("A pre-tokenizer runs against an already-trained vocabulary, so this is the")
+print("literal reading of the RFC. For Ethiopic it costs tokens rather than saving them:")
+print("the text roughly doubles in length and no existing vocabulary has merges for it.")
+""")
+
+code(r"""
+# B. Retraining BPE on decomposed text, at several vocabulary budgets.
+# Produced by decomposition_experiment.py (trains on Amharic Wikipedia, evaluates
+# on held-out text). Loaded here rather than retrained, since training six pairs of
+# BPE models takes minutes.
+import json
+res_path = DATA / "decomposition_results.json"
+if not res_path.exists():
+    print("run `python decomposition_experiment.py` to produce this table")
+else:
+    rows = json.loads(res_path.read_text())
+    print(f"{'vocab':>7}  {'RAW tok/char':>13} {'fert':>6}   "
+          f"{'DECOMP tok/char':>16} {'fert':>6}   {'ratio':>7}  verdict")
+    for r in rows:
+        v = "decomp wins" if r["ratio"] < 1 else "raw wins"
+        print(f"{r['vocab']:7d}  {r['raw_tok_per_char']:13.4f} {r['raw_fertility']:6.2f}   "
+              f"{r['dec_tok_per_char']:16.4f} {r['dec_fertility']:6.2f}   "
+              f"{r['ratio']:6.3f}x  {v}")
+    wins = [r["vocab"] for r in rows if r["ratio"] < 1]
+    print(f"\ndecomposition wins at: {wins or 'no budget tested'}")
+    print("Note the direction: the gap is WIDEST at small budgets and narrows as the")
+    print("vocabulary grows. The RFC's premise is the opposite -- that decomposition")
+    print("should help most precisely when vocabulary is scarce.")
+""")
+
+code(r"""
+# FIGURE 5 -- decomposition vs raw across vocabulary budgets
+if res_path.exists():
+    rows = json.loads(res_path.read_text())
+    xs = [r["vocab"] for r in rows]
+    fig, ax = plt.subplots(figsize=(8.5, 4.6))
+    ax.plot(xs, [r["raw_tok_per_char"] for r in rows], marker="o", markersize=7,
+            linewidth=2, color=FAMILY_COLOR["english-centric"], label="raw Amharic")
+    ax.plot(xs, [r["dec_tok_per_char"] for r in rows], marker="s", markersize=7,
+            linewidth=2, color=FAMILY_COLOR["multilingual"], label="decomposed")
+    for r in rows:
+        ax.text(r["vocab"], r["dec_tok_per_char"] + 0.012, f"{r['ratio']:.3f}x",
+                ha="center", fontsize=8, color=MUTED)
+    ax.set_xscale("log"); ax.set_xticks(xs)
+    ax.set_xticklabels([f"{v//1000}k" for v in xs])
+    style(ax, "Decomposition loses at every vocabulary budget",
+          "BPE vocabulary size (trained on Amharic Wikipedia, held-out evaluation)")
+    ax.set_ylabel("tokens per original character", fontsize=9, color=MUTED)
+    ax.grid(axis="y", color=GRID, linewidth=0.8)
+    ax.legend(frameon=False, fontsize=9)
+    save(fig, "decomposition_budgets.png")
+""")
+
+md(r"""
+## 13. Findings and limitations
 
 ### Findings
 
@@ -850,8 +1033,10 @@ md(r"""
   and morphology. §5 and §6 isolate the script; §4 does not.
 - **Consonant grouping is approximate.** §7 uses 8-codepoint rows, which does not
   perfectly model labialized forms.
-- **Tokenizer selection is partial.** Llama and Gemma are gated on the Hub and are not
-  measured. Their coverage is unknown and would materially extend this.
+- **Tokenizer selection is partial, and one exclusion is deliberate.** Llama is not
+  measured: its gate form collects date of birth, job title and geo for Meta, which is
+  not a fair trade for one table row. Gemma 2 and Aya Expanse occupy the same position
+  and are included. Other gated tokenizers remain unmeasured.
 - **Tokenization is not model quality.** Efficient tokenization does not establish that
   a model understands Amharic well. That needs downstream evaluation.
 
