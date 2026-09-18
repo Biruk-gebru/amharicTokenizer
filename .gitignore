@@ -5,3 +5,11 @@ __pycache__/
 # tiktoken BPE ranks: fetched, not vendored, to avoid redistributing
 # third-party data files. Run measurement/fetch_tiktoken_cache.sh.
 measurement/tkcache/
+
+# FLORES+ is fetched, never committed. Accepting its terms includes
+# "I agree not to re-host FLORES+ in places where it could be picked up by web
+# crawlers." Run measurement/fetch_flores.py.
+measurement/data/flores/
+
+# Amharic Wikipedia training corpus (1.5MB, regenerate with fetch_corpus.py)
+measurement/data/amh_wiki.txt
