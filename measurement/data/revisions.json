@@ -1,0 +1,23 @@
+{
+  "CohereForAI/aya-101": "e7dad472b9de8a30a00cf08a05c19003bf59028d",
+  "CohereLabs/aya-expanse-8b": "5062468bf9bc0c6035fd64e06274333ec127d980",
+  "Davlan/afro-xlmr-large": "7036fa1ed38d3418a122d3c7e00d5c748ed29f08",
+  "EleutherAI/gpt-neox-20b": "c292233c833e336628618a88a648727eb3dff0a7",
+  "HuggingFaceTB/SmolLM2-1.7B": "effd688a12921b4cc83e3312b6feb579f70f9c71",
+  "Qwen/Qwen3-8B": "b968826d9c46dd6066d109eabc6255188de91218",
+  "abdukuzi45/qwen3.5-4b-amharic-sft": "61ade4eb4e9fe8b732669f6cdc5bb025b1f25a00",
+  "allenai/OLMo-2-1124-7B": "7df9a82518afdecae4e8c026b27adccc8c1f0032",
+  "bigscience/bloom-560m": "ac2ae5fab2ce3f9f40dc79b5ca9f637430d24971",
+  "deepseek-ai/DeepSeek-V3": "e815299b0bcbac849fa540c768ef21845365c9eb",
+  "facebook/nllb-200-distilled-600M": "f8d333a098d19b4fd9a8b18f94170487ad3f821d",
+  "google-bert/bert-base-multilingual-cased": "3f076fdb1ab68d5b2880cb87a0886f315b8146f8",
+  "google/gemma-2-9b": "33c193028431c2fde6c6e51f29e6f17b60cbfac6",
+  "gpt2": "607a30d783dfa663caf39e06633721c8d4cfcd7e",
+  "meta-llama/Llama-3.1-8B": "d04e592bb4f6aa9cfee91e2e20afa771667e1d4b",
+  "mistralai/Mistral-7B-Instruct-v0.3": "c170c708c41dac9275d15a8fff4eca08d52bab71",
+  "mistralai/Mistral-Nemo-Base-2407": "a4477a2f977929a969745b69bbd62e03043551a5",
+  "moonshotai/Kimi-K3": "f831ab66814297da540d832a5235f8e904f29d06",
+  "openai/gpt-oss-20b": "6cee5e81ee83917806bbde320786a8fb61efebee",
+  "rasyosef/roberta-base-amharic": "b1a3d2c267262e2b82c83be9d4e59db762a5e931",
+  "xlm-roberta-base": "e73636d4f797dec63c3081bb6ed5c7b0bb3f2089"
+}
