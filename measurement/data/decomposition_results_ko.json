@@ -1,0 +1,66 @@
+{
+  "lang": "ko",
+  "script": "Hangul",
+  "rows": [
+    {
+      "vocab": 1000,
+      "raw_tokens": 120446,
+      "dec_tokens": 120318,
+      "raw_tok_per_char": 0.789287095104226,
+      "dec_tok_per_char": 0.788448306367586,
+      "raw_fertility": 3.665875334794254,
+      "dec_fertility": 3.661979547114682,
+      "ratio": 0.9989372830978198
+    },
+    {
+      "vocab": 2000,
+      "raw_tokens": 95605,
+      "dec_tokens": 97536,
+      "raw_tok_per_char": 0.6265031028630219,
+      "dec_tok_per_char": 0.6391570173196768,
+      "raw_fertility": 2.90981860238617,
+      "dec_fertility": 2.968590211833455,
+      "ratio": 1.020197688405418
+    },
+    {
+      "vocab": 4000,
+      "raw_tokens": 80231,
+      "dec_tokens": 82446,
+      "raw_tok_per_char": 0.5257567119481523,
+      "dec_tok_per_char": 0.5402716889142273,
+      "raw_fertility": 2.4418979790601414,
+      "dec_fertility": 2.5093133674214756,
+      "ratio": 1.0276077825279506
+    },
+    {
+      "vocab": 8000,
+      "raw_tokens": 69731,
+      "dec_tokens": 71385,
+      "raw_tok_per_char": 0.4569498233956527,
+      "dec_tok_per_char": 0.46778854660192265,
+      "raw_fertility": 2.1223216459702945,
+      "dec_fertility": 2.1726625273922573,
+      "ratio": 1.02371972293528
+    },
+    {
+      "vocab": 16000,
+      "raw_tokens": 62294,
+      "dec_tokens": 63518,
+      "raw_tok_per_char": 0.40821488718946797,
+      "dec_tok_per_char": 0.41623580448358793,
+      "raw_fertility": 1.8959702946189432,
+      "dec_fertility": 1.9332237643048453,
+      "ratio": 1.0196487623206087
+    },
+    {
+      "vocab": 32000,
+      "raw_tokens": 57665,
+      "dec_tokens": 58488,
+      "raw_tok_per_char": 0.3778808788933231,
+      "dec_tok_per_char": 0.3832740283484381,
+      "raw_fertility": 1.755082785488191,
+      "dec_fertility": 1.7801314828341854,
+      "ratio": 1.0142720887886933
+    }
+  ]
+}

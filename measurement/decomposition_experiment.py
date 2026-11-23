@@ -1,5 +1,9 @@
 """Does decomposition beat vocabulary expansion? Train BPE both ways and compare.
 
+    python decomposition_experiment.py am     # Ethiopic  (default)
+    python decomposition_experiment.py ko     # Hangul -- the RFC's own script
+
+
 RFC huggingface/tokenizers#1975 argues that decomposing compositional scripts into
 their parts beats "brute-force" vocabulary expansion. That claim is about how a
 tokenizer is TRAINED, so testing it means training two tokenizers on the same corpus
@@ -18,16 +22,29 @@ from pathlib import Path
 
 from tokenizers import Tokenizer, models, trainers, pre_tokenizers, decoders
 
-import ethiopic as E
-
 BUDGETS = [1000, 2000, 4000, 8000, 16000, 32000]
 SEED = 20260918
 
+LANG = sys.argv[1] if len(sys.argv) > 1 else "am"
+if LANG == "am":
+    import ethiopic as SCRIPT
+    SCRIPT_NAME, decomp = "Ethiopic", SCRIPT.decompose
+elif LANG == "ko":
+    import hangul as SCRIPT
+    SCRIPT_NAME = "Hangul"
+    # Compatibility jamo: what the RFC's own example uses, and what a tokenizer is
+    # most likely to have seen. Canonical (NFD) jamo are silently recomposed by any
+    # tokenizer with an NFC normalizer, which makes them useless as a text-level
+    # transform -- see the notebook.
+    decomp = lambda t: SCRIPT.decompose(t, "compat")
+else:
+    sys.exit(f"unknown language {LANG!r}; use 'am' or 'ko'")
+
 
 def load_corpus():
-    p = Path("data/amh_wiki.txt")
+    p = Path(f"data/{LANG}_wiki.txt")
     if not p.exists():
-        sys.exit("data/amh_wiki.txt missing -- run fetch_corpus.py first")
+        sys.exit(f"{p} missing -- run `python fetch_corpus.py {LANG}` first")
     paras = [x.strip() for x in p.read_text(encoding="utf-8").split("\n\n") if x.strip()]
     random.Random(SEED).shuffle(paras)
     cut = int(len(paras) * 0.9)
@@ -50,7 +67,7 @@ def measure(tok, held_out, decompose):
     """Tokens needed for held-out text, normalised against the ORIGINAL characters."""
     n_tok = n_chars = n_words = 0
     for t in held_out:
-        src = E.decompose(t) if decompose else t
+        src = decomp(t) if decompose else t
         n_tok += len(tok.encode(src, add_special_tokens=False).ids)
         n_chars += len(t)                    # original length, both arms
         n_words += len(t.split())
@@ -60,12 +77,13 @@ def measure(tok, held_out, decompose):
 def main():
     train, held = load_corpus()
     train_raw = train
-    train_dec = [E.decompose(t) for t in train]
+    train_dec = [decomp(t) for t in train]
     tr_chars = sum(len(t) for t in train)
     print(f"corpus: {len(train)} train paragraphs ({tr_chars:,} chars), "
           f"{len(held)} held-out ({sum(len(t) for t in held):,} chars)")
-    d, t = E.coverage("".join(train))
-    print(f"decomposable Ethiopic characters in training text: {d}/{t} ({d/t*100:.1f}%)\n")
+    d, t = SCRIPT.coverage("".join(train))
+    print(f"script: {SCRIPT_NAME}   decomposable characters in training text: "
+          f"{d}/{t} ({d/max(t,1)*100:.1f}%)\n")
 
     print(f"{'vocab':>7}  {'RAW tok/char':>13} {'fert':>7}   "
           f"{'DECOMP tok/char':>16} {'fert':>7}   {'decomp vs raw':>14}")
@@ -83,8 +101,9 @@ def main():
                      "raw_tok_per_char": tc_r, "dec_tok_per_char": tc_d,
                      "raw_fertility": f_r, "dec_fertility": f_d, "ratio": ratio})
 
-    Path("data/decomposition_results.json").write_text(json.dumps(rows, indent=2))
-    print("\nwrote data/decomposition_results.json")
+    out = Path(f"data/decomposition_results_{LANG}.json")
+    out.write_text(json.dumps({"lang": LANG, "script": SCRIPT_NAME, "rows": rows}, indent=2))
+    print(f"\nwrote {out}")
 
     wins = [r["vocab"] for r in rows if r["ratio"] < 1]
     if wins:
