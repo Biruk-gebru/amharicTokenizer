@@ -11,5 +11,5 @@ measurement/tkcache/
 # crawlers." Run measurement/fetch_flores.py.
 measurement/data/flores/
 
-# Amharic Wikipedia training corpus (1.5MB, regenerate with fetch_corpus.py)
-measurement/data/amh_wiki.txt
+# Wikipedia training corpora (regenerate with fetch_corpus.py <lang>)
+measurement/data/*_wiki.txt

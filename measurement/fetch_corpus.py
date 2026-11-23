@@ -1,7 +1,10 @@
-"""Fetch an Amharic training corpus from Amharic Wikipedia (CC BY-SA 4.0).
+"""Fetch a Wikipedia training corpus for a given language (CC BY-SA 4.0).
+
+    python fetch_corpus.py am 1500000     -> data/am_wiki.txt   (Amharic)
+    python fetch_corpus.py ko 1500000     -> data/ko_wiki.txt   (Korean)
 
 UDHR is ~5k characters, far too small to train a BPE vocabulary on. This walks
-am.wikipedia.org and saves article extracts. No account or token needed.
+<lang>.wikipedia.org and saves article extracts. No account or token needed.
 
 Two things learned the hard way and encoded here:
   * Wikimedia returns 403 to any request without a descriptive User-Agent. That is
@@ -20,11 +23,12 @@ corpus instead of nothing.
 import json, sys, time, urllib.parse, urllib.request
 from pathlib import Path
 
-API = "https://am.wikipedia.org/w/api.php"
+LANG = sys.argv[1] if len(sys.argv) > 1 else "am"
+API = f"https://{LANG}.wikipedia.org/w/api.php"
 UA = {"User-Agent": "amharicTokenizer-research/0.1 "
                     "(https://github.com/Biruk-gebru/amharicTokenizer)"}
-OUT = Path("data/amh_wiki.txt")
-TARGET = int(sys.argv[1]) if len(sys.argv) > 1 else 400_000
+OUT = Path(f"data/{LANG}_wiki.txt")
+TARGET = int(sys.argv[2]) if len(sys.argv) > 2 else 1_500_000
 
 
 def get(params):
@@ -67,8 +71,10 @@ def main():
 
     text = OUT.read_text(encoding="utf-8")
     eth = sum(1 for c in text if 0x1200 <= ord(c) < 0x1380)
-    print(f"\nwrote {OUT}: {len(text):,} chars, {eth/max(len(text),1)*100:.1f}% Ethiopic, "
-          f"{n} articles")
+    han = sum(1 for c in text if 0xAC00 <= ord(c) < 0xD7A4)
+    script = f"{eth/max(len(text),1)*100:.1f}% Ethiopic" if eth > han \
+             else f"{han/max(len(text),1)*100:.1f}% Hangul"
+    print(f"\nwrote {OUT}: {len(text):,} chars, {script}, {n} articles")
 
 
 if __name__ == "__main__":
